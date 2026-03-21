@@ -1,7 +1,25 @@
-const commands = {
-  // ... other commands stay the same ...
+const { InteractionType, InteractionResponseType, verifyKey } = require('discord-interactions');
+const db = require('../lib/database');
+const { generateMinesPrediction, generateTowersPrediction } = require('../lib/predictor');
 
-  'predict-mines': async (interaction) => {
+const ADMIN_USER_ID = '1418119119227850802';
+
+function verifyDiscordRequest(req, body) {
+  const signature = req.headers['x-signature-ed25519'];
+  const timestamp = req.headers['x-signature-timestamp'];
+  return verifyKey(body, signature, timestamp, process.env.PUBLIC_KEY);
+}
+
+async function getRawBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+const commands = {
+  mines: async (interaction) => {
     const userId = interaction.member.user.id;
     const license = await db.checkLicense(userId);
 
@@ -11,8 +29,9 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ No Active License',
-            description: 'You need an active license to use predictions.\n\nUse `/panel` to get started!',
-            color: 0xff0000
+            description: 'You need an active license to use predictions.\n\n**Get started:**\n• Purchase a license at: [Your SellAuth Link]\n• Use `/redeem <key>` to activate\n• Then use `/mines` or `/towers`',
+            color: 0xff0000,
+            footer: { text: 'Kyo Predictor - Premium License Required' }
           }],
           flags: 64
         }
@@ -23,6 +42,21 @@ const commands = {
     const predictedTiles = interaction.data.options[1].value;
     const hash = interaction.data.options[2].value;
 
+    // Validate hash format
+    if (hash.length < 8) {
+      return {
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          embeds: [{
+            title: '❌ Invalid Hash',
+            description: 'Please provide a valid game hash from Bloxflip.\n\n**Where to find it:**\n1. Start a Mines game on Bloxflip\n2. Look for the "Provably Fair" section\n3. Copy the Server Seed Hash\n4. Use it in the command',
+            color: 0xff0000
+          }],
+          flags: 64
+        }
+      };
+    }
+
     // Validate: can't predict more tiles than available
     const maxSafeTiles = 25 - bombs;
     if (predictedTiles > maxSafeTiles) {
@@ -31,7 +65,7 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ Invalid Configuration',
-            description: `With **${bombs} bombs**, only **${maxSafeTiles} safe tiles** exist!\n\nYou requested **${predictedTiles} predictions**.\n\nPlease choose ${maxSafeTiles} or fewer tiles.`,
+            description: `With **${bombs} bombs**, only **${maxSafeTiles} safe tiles** exist!\n\nYou requested **${predictedTiles} predictions**.\n\nPlease choose **${maxSafeTiles} or fewer** tiles.`,
             color: 0xff0000
           }],
           flags: 64
@@ -53,6 +87,14 @@ const commands = {
     const confidenceBar = '█'.repeat(Math.floor(prediction.confidence / 10)) + 
                          '░'.repeat(10 - Math.floor(prediction.confidence / 10));
 
+    // Determine color based on confidence
+    const embedColor = prediction.confidence >= 80 ? 0x00ff00 : 
+                      prediction.confidence >= 70 ? 0xffff00 : 0xff6600;
+
+    // Risk assessment
+    const riskLevel = predictedTiles <= 3 ? '🟢 Low Risk' : 
+                     predictedTiles <= 6 ? '🟡 Medium Risk' : '🔴 High Risk';
+
     return {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
@@ -60,37 +102,31 @@ const commands = {
           title: '💣 Mines Prediction',
           description: `**Confidence:** ${prediction.confidence}% ${confidenceBar}\n` +
                       `**Predictions:** ${predictedTiles}/${prediction.totalSafeTiles} safe tiles\n` +
-                      `**Bombs:** ${bombs}\n\n${gridText}`,
+                      `**Bombs:** ${bombs}\n**Risk:** ${riskLevel}\n\n${gridText}`,
           fields: [
             { 
-              name: '📍 Safe Positions', 
-              value: prediction.safeTiles.map(t => `Position ${t + 1}`).join(', '), 
-              inline: false 
-            },
-            { 
-              name: '🎯 Hash', 
-              value: `\`${prediction.hash}\``, 
+              name: '📍 Recommended Safe Tiles', 
+              value: prediction.safeTiles.map((t, i) => `${i + 1}. Position ${t + 1}`).join('\n'), 
               inline: true 
             },
-            {
-              name: '⚠️ Risk Level',
-              value: predictedTiles <= 3 ? '🟢 Low' : 
-                     predictedTiles <= 6 ? '🟡 Medium' : '🔴 High',
-              inline: true
+            { 
+              name: '🎯 Game Info', 
+              value: `Hash: \`${prediction.hash}...\`\nBombs: ${bombs}\nGrid: 5x5 (25 tiles)`, 
+              inline: true 
             }
           ],
-          color: prediction.confidence >= 80 ? 0x00ff00 : 
-                 prediction.confidence >= 70 ? 0xffff00 : 0xff6600,
+          color: embedColor,
           footer: { 
-            text: `✅ Click green tiles • Predicting ${predictedTiles} tiles reduces confidence` 
-          }
+            text: `Kyo Predictor • ${predictedTiles} tiles • More predictions = lower confidence` 
+          },
+          timestamp: new Date().toISOString()
         }],
         flags: 64
       }
     };
   },
 
-  'predict-towers': async (interaction) => {
+  towers: async (interaction) => {
     const userId = interaction.member.user.id;
     const license = await db.checkLicense(userId);
 
@@ -100,8 +136,9 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ No Active License',
-            description: 'You need an active license to use predictions.\n\nUse `/panel` to get started!',
-            color: 0xff0000
+            description: 'You need an active license to use predictions.\n\n**Get started:**\n• Purchase a license at: [Your SellAuth Link]\n• Use `/redeem <key>` to activate\n• Then use `/mines` or `/towers`',
+            color: 0xff0000,
+            footer: { text: 'Kyo Predictor - Premium License Required' }
           }],
           flags: 64
         }
@@ -112,16 +149,39 @@ const commands = {
     const rowCount = interaction.data.options[1].value;
     const hash = interaction.data.options[2].value;
 
+    // Validate hash
+    if (hash.length < 8) {
+      return {
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          embeds: [{
+            title: '❌ Invalid Hash',
+            description: 'Please provide a valid game hash from Bloxflip.\n\n**Where to find it:**\n1. Start a Towers game on Bloxflip\n2. Look for the "Provably Fair" section\n3. Copy the Server Seed Hash\n4. Use it in the command',
+            color: 0xff0000
+          }],
+          flags: 64
+        }
+      };
+    }
+
     const prediction = generateTowersPrediction(difficulty, rowCount, hash);
     await db.savePrediction(userId, 'towers', prediction);
 
     const tileEmojis = ['⬅️', '⬆️', '➡️'];
+    const tileNames = ['Left', 'Middle', 'Right'];
+    
     const path = prediction.predictions.map((tile, idx) => 
-      `Row ${idx + 1}: ${tileEmojis[tile]} ${['Left', 'Middle', 'Right'][tile]}`
+      `**Row ${idx + 1}:** ${tileEmojis[tile]} ${tileNames[tile]}`
     ).join('\n');
 
     const confidenceBar = '█'.repeat(Math.floor(prediction.confidence / 10)) + 
                          '░'.repeat(10 - Math.floor(prediction.confidence / 10));
+
+    const embedColor = prediction.confidence >= 80 ? 0x9b59b6 : 
+                      prediction.confidence >= 70 ? 0xe67e22 : 0xe74c3c;
+
+    const riskLevel = rowCount <= 2 ? '🟢 Low Risk' : 
+                     rowCount <= 5 ? '🟡 Medium Risk' : '🔴 High Risk';
 
     return {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -130,43 +190,27 @@ const commands = {
           title: '🗼 Towers Prediction',
           description: `**Confidence:** ${prediction.confidence}% ${confidenceBar}\n` +
                       `**Difficulty:** ${difficulty.toUpperCase()}\n` +
-                      `**Rows Predicted:** ${rowCount}/${prediction.totalRows}\n\n${path}`,
+                      `**Rows Predicted:** ${rowCount}/${prediction.totalRows}\n` +
+                      `**Risk:** ${riskLevel}\n\n${path}`,
           fields: [
             { 
-              name: '🎯 Hash', 
-              value: `\`${prediction.hash}\``, 
+              name: '🎯 Game Info', 
+              value: `Hash: \`${prediction.hash}...\`\nDifficulty: ${difficulty}\nTotal Rows: 8`, 
               inline: true 
             },
             {
-              name: '⚠️ Risk Level',
-              value: rowCount <= 2 ? '🟢 Low' : 
-                     rowCount <= 5 ? '🟡 Medium' : '🔴 High',
+              name: '💡 Strategy Tip',
+              value: rowCount <= 3 ? 'Safe play! Good for consistent wins.' :
+                     rowCount <= 6 ? 'Balanced risk. Watch the confidence!' :
+                     'High risk! Consider cashing out early.',
               inline: true
             }
           ],
-          color: prediction.confidence >= 80 ? 0x9b59b6 : 
-                 prediction.confidence >= 70 ? 0xe67e22 : 0xe74c3c,
+          color: embedColor,
           footer: { 
-            text: `⬅️ Left | ⬆️ Middle | ➡️ Right • More rows = lower confidence` 
-          }
-        }],
-        flags: 64
-      }
-    };
-  },
-};
-    return {
-      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-      data: {
-        embeds: [{
-          title: '🗼 Towers Prediction',
-          description: `**Confidence:** ${prediction.confidence}%\n**Difficulty:** ${difficulty.toUpperCase()}\n\n${path}`,
-          fields: [
-            { name: 'Hash', value: `\`${prediction.hash}\``, inline: true },
-            { name: 'Rows', value: `${prediction.rows}`, inline: true }
-          ],
-          color: 0x9b59b6,
-          footer: { text: '⬅️ Left | ⬆️ Middle | ➡️ Right' }
+            text: `Kyo Predictor • ⬅️ Left | ⬆️ Middle | ➡️ Right • More rows = lower confidence` 
+          },
+          timestamp: new Date().toISOString()
         }],
         flags: 64
       }
@@ -175,7 +219,7 @@ const commands = {
 
   redeem: async (interaction) => {
     const userId = interaction.member.user.id;
-    const key = interaction.data.options[0].value;
+    const key = interaction.data.options[0].value.toUpperCase().trim();
 
     const result = await db.redeemKey(userId, key);
 
@@ -185,23 +229,34 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ Redemption Failed',
-            description: result.error,
-            color: 0xff0000
+            description: `**Error:** ${result.error}\n\n**Common issues:**\n• Key already used\n• Invalid key format\n• Typo in key\n\nDouble-check your key and try again.\nIf issues persist, contact support.`,
+            color: 0xff0000,
+            footer: { text: 'Kyo Predictor - License Redemption' }
           }],
           flags: 64
         }
       };
     }
 
-    const expiryDate = new Date(result.expiresAt).toLocaleDateString();
+    const expiryDate = new Date(result.expiresAt).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
 
     return {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
         embeds: [{
           title: '✅ License Activated!',
-          description: `Your premium license is now active.\n\n**Expires:** ${expiryDate}\n\nUse \`/panel\` to start predicting!`,
-          color: 0x00ff00
+          description: `Your premium license is now active!\n\n**Available Commands:**\n• \`/mines\` - Predict Mines games\n• \`/towers\` - Predict Towers games\n• \`/license\` - Check status\n• \`/help\` - Get help`,
+          fields: [
+            { name: 'Expires', value: expiryDate, inline: true },
+            { name: 'Status', value: '🟢 Active', inline: true }
+          ],
+          color: 0x00ff00,
+          footer: { text: 'Kyo Predictor - Welcome!' },
+          timestamp: new Date().toISOString()
         }],
         flags: 64
       }
@@ -218,15 +273,27 @@ const commands = {
         data: {
           embeds: [{
             title: '📋 License Status',
-            description: license.expired ? '❌ Your license has expired' : '❌ No active license',
-            color: 0xff0000
+            description: license.expired 
+              ? '❌ Your license has expired\n\nPurchase a new license to continue using predictions.'
+              : '❌ No active license found\n\nPurchase a license and use `/redeem <key>` to activate.',
+            fields: [
+              { name: 'Get a License', value: '[Purchase Here](https://your-sellauth-link.com)', inline: false }
+            ],
+            color: 0xff0000,
+            footer: { text: 'Kyo Predictor' }
           }],
           flags: 64
         }
       };
     }
 
-    const expiryDate = new Date(license.expiresAt).toLocaleDateString();
+    const expiryDate = new Date(license.expiresAt).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
     const daysLeft = Math.ceil((license.expiresAt - Date.now()) / (1000 * 60 * 60 * 24));
 
     return {
@@ -234,12 +301,62 @@ const commands = {
       data: {
         embeds: [{
           title: '✅ Active License',
+          description: `Your premium license is active and working!`,
           fields: [
-            { name: 'Status', value: 'Active', inline: true },
+            { name: 'Status', value: '🟢 Active', inline: true },
             { name: 'Expires', value: expiryDate, inline: true },
-            { name: 'Days Left', value: `${daysLeft} days`, inline: true }
+            { name: 'Days Remaining', value: `${daysLeft} days`, inline: true }
           ],
-          color: 0x00ff00
+          color: 0x00ff00,
+          footer: { text: 'Kyo Predictor - License Status' },
+          timestamp: new Date().toISOString()
+        }],
+        flags: 64
+      }
+    };
+  },
+
+  help: async (interaction) => {
+    return {
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: {
+        embeds: [{
+          title: '❓ Kyo Predictor - Help Guide',
+          description: '**Available Commands:**',
+          fields: [
+            {
+              name: '💣 /mines',
+              value: '```\n/mines bombs:3 predictions:2 hash:abc123...\n```\nGet Mines predictions. Choose bomb count and how many tiles to predict.',
+              inline: false
+            },
+            {
+              name: '🗼 /towers',
+              value: '```\n/towers difficulty:easy rows:3 hash:abc123...\n```\nGet Towers predictions. Choose difficulty and number of rows.',
+              inline: false
+            },
+            {
+              name: '🔑 /redeem',
+              value: '```\n/redeem key:KEY-ABC123XYZ\n```\nActivate your license key after purchase.',
+              inline: false
+            },
+            {
+              name: '📋 /license',
+              value: 'Check your current license status and expiry date.',
+              inline: false
+            },
+            {
+              name: '📚 Tips & Tricks',
+              value: '• More predictions = lower confidence\n• Start with 1-3 tiles for high accuracy\n• Hash found in Provably Fair section on Bloxflip\n• Use `/license` to check time remaining',
+              inline: false
+            },
+            {
+              name: '🛒 Get a License',
+              value: 'Purchase at: [Your SellAuth Link]\nPrices: 1 Day ($2.99) | 5 Days ($4.99) | 1 Month ($12.99) | Lifetime ($39.99)',
+              inline: false
+            }
+          ],
+          color: 0x5865f2,
+          footer: { text: 'Kyo Predictor - Premium Bloxflip Predictions' }
         }],
         flags: 64
       }
@@ -255,7 +372,7 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ Access Denied',
-            description: 'This command is admin-only.',
+            description: 'This command is restricted to administrators only.',
             color: 0xff0000
           }],
           flags: 64
@@ -271,8 +388,14 @@ const commands = {
       data: {
         embeds: [{
           title: '🔑 License Key Generated',
-          description: `**Key:** \`${key}\`\n**Duration:** ${days} days\n\nShare this with the customer.`,
-          color: 0x00ff00
+          description: `A new license key has been created successfully.`,
+          fields: [
+            { name: 'Key', value: `\`${key}\``, inline: false },
+            { name: 'Duration', value: `${days} days`, inline: true },
+            { name: 'Status', value: 'Unredeemed', inline: true }
+          ],
+          color: 0x00ff00,
+          footer: { text: 'Admin Panel - Keep this key secure!' }
         }],
         flags: 64
       }
@@ -308,50 +431,6 @@ module.exports = async (req, res) => {
       if (handler) {
         const response = await handler(interaction);
         return res.json(response);
-      }
-    }
-
-    // Handle button clicks
-    if (interaction.type === InteractionType.MESSAGE_COMPONENT) {
-      const userId = interaction.member.user.id;
-
-      if (interaction.data.custom_id === 'check_license') {
-        const license = await db.checkLicense(userId);
-        const message = license.active
-          ? `✅ Active until ${new Date(license.expiresAt).toLocaleDateString()}`
-          : '❌ No active license';
-
-        return res.json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            content: message,
-            flags: 64
-          }
-        });
-      }
-
-      if (interaction.data.custom_id === 'buy_license') {
-        return res.json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            embeds: [{
-              title: '💳 Purchase License',
-              description: 'To purchase a license:\n\n1. Create a ticket in <#YOUR_TICKET_CHANNEL>\n2. Select "Purchase License"\n3. Our staff will assist you\n\n**Pricing:**\n• 7 Days - $5\n• 30 Days - $15\n• Lifetime - $50',
-              color: 0x5865f2
-            }],
-            flags: 64
-          }
-        });
-      }
-
-      if (interaction.data.custom_id === 'redeem_key') {
-        return res.json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            content: 'Use `/redeem <key>` to activate your license!',
-            flags: 64
-          }
-        });
       }
     }
 
