@@ -1,23 +1,3 @@
-const { InteractionType, InteractionResponseType, verifyKey } = require('discord-interactions');
-const db = require('../lib/database');
-const { generateMinesPrediction, generateTowersPrediction } = require('../lib/predictor');
-
-const ADMIN_USER_ID = '1418119119227850802';
-
-function verifyDiscordRequest(req, body) {
-  const signature = req.headers['x-signature-ed25519'];
-  const timestamp = req.headers['x-signature-timestamp'];
-  return verifyKey(body, signature, timestamp, process.env.PUBLIC_KEY);
-}
-
-async function getRawBody(req) {
-  return new Promise((resolve) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-  });
-}
-
 const commands = {
   mines: async (interaction) => {
     const userId = interaction.member.user.id;
@@ -29,7 +9,7 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ No Active License',
-            description: 'You need an active license to use predictions.\n\n**Get started:**\n• Purchase a license at: [Your SellAuth Link]\n• Use `/redeem <key>` to activate\n• Then use `/mines` or `/towers`',
+            description: 'You need an active license to use predictions.\n\n**Get started:**\n• Purchase a license at: https://your-sellauth-link.sellauth.com\n• Use `/redeem <key>` to activate\n• Then use `/mines` or `/towers` to predict!',
             color: 0xff0000,
             footer: { text: 'Kyo Predictor - Premium License Required' }
           }],
@@ -49,7 +29,7 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ Invalid Hash',
-            description: 'Please provide a valid game hash from Bloxflip.\n\n**Where to find it:**\n1. Start a Mines game on Bloxflip\n2. Look for the "Provably Fair" section\n3. Copy the Server Seed Hash\n4. Use it in the command',
+            description: 'Please provide a valid game hash from Bloxflip.\n\n**Where to find it:**\n1. Start a Mines game on Bloxflip\n2. Look for the "Provably Fair" section\n3. Copy the Server Seed Hash\n4. Paste it in the command',
             color: 0xff0000
           }],
           flags: 64
@@ -136,7 +116,7 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ No Active License',
-            description: 'You need an active license to use predictions.\n\n**Get started:**\n• Purchase a license at: [Your SellAuth Link]\n• Use `/redeem <key>` to activate\n• Then use `/mines` or `/towers`',
+            description: 'You need an active license to use predictions.\n\n**Get started:**\n• Purchase a license at: https://your-sellauth-link.sellauth.com\n• Use `/redeem <key>` to activate\n• Then use `/mines` or `/towers` to predict!',
             color: 0xff0000,
             footer: { text: 'Kyo Predictor - Premium License Required' }
           }],
@@ -156,7 +136,7 @@ const commands = {
         data: {
           embeds: [{
             title: '❌ Invalid Hash',
-            description: 'Please provide a valid game hash from Bloxflip.\n\n**Where to find it:**\n1. Start a Towers game on Bloxflip\n2. Look for the "Provably Fair" section\n3. Copy the Server Seed Hash\n4. Use it in the command',
+            description: 'Please provide a valid game hash from Bloxflip.\n\n**Where to find it:**\n1. Start a Towers game on Bloxflip\n2. Look for the "Provably Fair" section\n3. Copy the Server Seed Hash\n4. Paste it in the command',
             color: 0xff0000
           }],
           flags: 64
@@ -248,14 +228,14 @@ const commands = {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
         embeds: [{
-          title: '✅ License Activated!',
-          description: `Your premium license is now active!\n\n**Available Commands:**\n• \`/mines\` - Predict Mines games\n• \`/towers\` - Predict Towers games\n• \`/license\` - Check status\n• \`/help\` - Get help`,
+          title: '✅ License Activated Successfully!',
+          description: `Your premium license is now active!\n\n**You can now use:**\n• \`/mines\` - Predict Mines games\n• \`/towers\` - Predict Towers games\n• \`/license\` - Check your status\n• \`/help\` - View all commands`,
           fields: [
-            { name: 'Expires', value: expiryDate, inline: true },
-            { name: 'Status', value: '🟢 Active', inline: true }
+            { name: '⏰ Expires', value: expiryDate, inline: true },
+            { name: '✅ Status', value: 'Active', inline: true }
           ],
           color: 0x00ff00,
-          footer: { text: 'Kyo Predictor - Welcome!' },
+          footer: { text: 'Kyo Predictor - Welcome aboard!' },
           timestamp: new Date().toISOString()
         }],
         flags: 64
@@ -274,10 +254,10 @@ const commands = {
           embeds: [{
             title: '📋 License Status',
             description: license.expired 
-              ? '❌ Your license has expired\n\nPurchase a new license to continue using predictions.'
-              : '❌ No active license found\n\nPurchase a license and use `/redeem <key>` to activate.',
+              ? '❌ Your license has expired\n\n**Renew now:**\nVisit our shop and use `/redeem <key>` to activate a new license.'
+              : '❌ No active license found\n\n**Get started:**\nPurchase a license and use `/redeem <key>` to activate.',
             fields: [
-              { name: 'Get a License', value: '[Purchase Here](https://your-sellauth-link.com)', inline: false }
+              { name: '🛒 Get a License', value: '[Shop Link](https://your-sellauth-link.sellauth.com)', inline: false }
             ],
             color: 0xff0000,
             footer: { text: 'Kyo Predictor' }
@@ -301,11 +281,11 @@ const commands = {
       data: {
         embeds: [{
           title: '✅ Active License',
-          description: `Your premium license is active and working!`,
+          description: `Your premium license is active!\n\n**Available commands:**\n• \`/mines\` - Mines predictions\n• \`/towers\` - Towers predictions`,
           fields: [
-            { name: 'Status', value: '🟢 Active', inline: true },
-            { name: 'Expires', value: expiryDate, inline: true },
-            { name: 'Days Remaining', value: `${daysLeft} days`, inline: true }
+            { name: '✅ Status', value: 'Active', inline: true },
+            { name: '⏰ Expires', value: expiryDate, inline: true },
+            { name: '📅 Days Left', value: `${daysLeft} days`, inline: true }
           ],
           color: 0x00ff00,
           footer: { text: 'Kyo Predictor - License Status' },
@@ -321,42 +301,50 @@ const commands = {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
         embeds: [{
-          title: '❓ Kyo Predictor - Help Guide',
-          description: '**Available Commands:**',
+          title: '❓ Kyo Predictor - Command Guide',
+          description: '**Quick Start Guide:**\n\n1. Purchase a license from our shop\n2. Use `/redeem <key>` to activate\n3. Use `/mines` or `/towers` to predict!\n\n**All Commands:**',
           fields: [
             {
               name: '💣 /mines',
-              value: '```\n/mines bombs:3 predictions:2 hash:abc123...\n```\nGet Mines predictions. Choose bomb count and how many tiles to predict.',
+              value: '```\n/mines bombs:3 predictions:2 hash:abc123...\n```\nPredict Mines games. Choose bomb count (1-20) and number of safe tiles to predict (1-10).\n\n**Example:** `/mines bombs:5 predictions:3 hash:a1b2c3d4`',
               inline: false
             },
             {
               name: '🗼 /towers',
-              value: '```\n/towers difficulty:easy rows:3 hash:abc123...\n```\nGet Towers predictions. Choose difficulty and number of rows.',
+              value: '```\n/towers difficulty:easy rows:3 hash:abc123...\n```\nPredict Towers games. Choose difficulty (easy/medium/hard) and rows to predict (1-8).\n\n**Example:** `/towers difficulty:medium rows:4 hash:a1b2c3d4`',
               inline: false
             },
             {
               name: '🔑 /redeem',
-              value: '```\n/redeem key:KEY-ABC123XYZ\n```\nActivate your license key after purchase.',
+              value: '```\n/redeem key:KEY-ABC123XYZ\n```\nActivate your license after purchase. Key is sent to your email.',
               inline: false
             },
             {
               name: '📋 /license',
-              value: 'Check your current license status and expiry date.',
+              value: 'Check your license status, expiry date, and days remaining.',
               inline: false
             },
             {
-              name: '📚 Tips & Tricks',
-              value: '• More predictions = lower confidence\n• Start with 1-3 tiles for high accuracy\n• Hash found in Provably Fair section on Bloxflip\n• Use `/license` to check time remaining',
+              name: '📚 Pro Tips',
+              value: '• **More predictions = lower confidence**\n• Start with 1-3 tiles for best accuracy\n• Find hash in "Provably Fair" on Bloxflip\n• Higher confidence = safer bet\n• Lower predictions = higher win chance',
               inline: false
             },
             {
-              name: '🛒 Get a License',
-              value: 'Purchase at: [Your SellAuth Link]\nPrices: 1 Day ($2.99) | 5 Days ($4.99) | 1 Month ($12.99) | Lifetime ($39.99)',
+              name: '🔍 Where to find the hash?',
+              value: '1. Start any game on Bloxflip\n2. Click "Provably Fair" button\n3. Copy the "Server Seed Hash"\n4. Paste it in the command',
+              inline: false
+            },
+            {
+              name: '🛒 Need a License?',
+              value: '**Pricing:**\n• 1 Day - $2.99\n• 5 Days - $4.99\n• 1 Month - $12.99\n• Lifetime - $39.99\n\n[Purchase Now](https://your-sellauth-link.sellauth.com)',
               inline: false
             }
           ],
           color: 0x5865f2,
-          footer: { text: 'Kyo Predictor - Premium Bloxflip Predictions' }
+          footer: { text: 'Kyo Predictor - Premium Bloxflip Predictions' },
+          thumbnail: {
+            url: 'https://your-logo-url.png' // Optional: add your logo
+          }
         }],
         flags: 64
       }
@@ -390,53 +378,16 @@ const commands = {
           title: '🔑 License Key Generated',
           description: `A new license key has been created successfully.`,
           fields: [
-            { name: 'Key', value: `\`${key}\``, inline: false },
-            { name: 'Duration', value: `${days} days`, inline: true },
-            { name: 'Status', value: 'Unredeemed', inline: true }
+            { name: '🔑 Key', value: `\`${key}\``, inline: false },
+            { name: '⏰ Duration', value: `${days} days`, inline: true },
+            { name: '✅ Status', value: 'Unredeemed', inline: true }
           ],
           color: 0x00ff00,
-          footer: { text: 'Admin Panel - Keep this key secure!' }
+          footer: { text: 'Admin Panel - Share this key with customer' },
+          timestamp: new Date().toISOString()
         }],
         flags: 64
       }
     };
-  }
-};
-
-module.exports = async (req, res) => {
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  try {
-    const rawBody = await getRawBody(req);
-    const isValid = verifyDiscordRequest(req, rawBody);
-
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid request signature' });
-    }
-
-    const interaction = JSON.parse(rawBody.toString());
-
-    if (interaction.type === InteractionType.PING) {
-      return res.json({ type: InteractionResponseType.PONG });
-    }
-
-    if (interaction.type === InteractionType.APPLICATION_COMMAND) {
-      const handler = commands[interaction.data.name];
-      if (handler) {
-        const response = await handler(interaction);
-        return res.json(response);
-      }
-    }
-
-    return res.status(400).json({ error: 'Unknown interaction' });
-  } catch (error) {
-    console.error('Error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
   }
 };
