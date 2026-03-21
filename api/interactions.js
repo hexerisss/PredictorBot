@@ -1,69 +1,5 @@
-const { InteractionType, InteractionResponseType, verifyKey, MessageComponentTypes, ButtonStyleTypes } = require('discord-interactions');
-const db = require('../lib/database');
-const { generateMinesPrediction, generateTowersPrediction } = require('../lib/predictor');
-
-const ADMIN_USER_ID = '1418119119227850802';
-
-function verifyDiscordRequest(req, body) {
-  const signature = req.headers['x-signature-ed25519'];
-  const timestamp = req.headers['x-signature-timestamp'];
-  return verifyKey(body, signature, timestamp, process.env.PUBLIC_KEY);
-}
-
-async function getRawBody(req) {
-  return new Promise((resolve) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-  });
-}
-
-function createPanelMessage() {
-  return {
-    embeds: [{
-      title: '🎮 Bloxflip Predictor Panel',
-      description: '**Premium Prediction Service**\n\nGet accurate predictions for Bloxflip Mines and Towers games.',
-      fields: [
-        { name: '💣 Mines', value: 'Use `/predict-mines` with your game hash', inline: true },
-        { name: '🗼 Towers', value: 'Use `/predict-towers` with your game hash', inline: true },
-        { name: '📊 Accuracy', value: '70-95% confidence', inline: true }
-      ],
-      color: 0x5865f2,
-      footer: { text: 'Premium License Required' }
-    }],
-    components: [{
-      type: 1,
-      components: [
-        {
-          type: 2,
-          style: 1,
-          label: '🔑 Redeem Key',
-          custom_id: 'redeem_key'
-        },
-        {
-          type: 2,
-          style: 3,
-          label: '💳 Buy License',
-          custom_id: 'buy_license'
-        },
-        {
-          type: 2,
-          style: 2,
-          label: '📋 Check License',
-          custom_id: 'check_license'
-        }
-      ]
-    }]
-  };
-}
-
 const commands = {
-  panel: async (interaction) => {
-    return {
-      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-      data: createPanelMessage()
-    };
-  },
+  // ... other commands stay the same ...
 
   'predict-mines': async (interaction) => {
     const userId = interaction.member.user.id;
@@ -78,15 +14,32 @@ const commands = {
             description: 'You need an active license to use predictions.\n\nUse `/panel` to get started!',
             color: 0xff0000
           }],
-          flags: 64 // Ephemeral
+          flags: 64
         }
       };
     }
 
     const bombs = interaction.data.options[0].value;
-    const hash = interaction.data.options[1].value;
+    const predictedTiles = interaction.data.options[1].value;
+    const hash = interaction.data.options[2].value;
 
-    const prediction = generateMinesPrediction(bombs, hash);
+    // Validate: can't predict more tiles than available
+    const maxSafeTiles = 25 - bombs;
+    if (predictedTiles > maxSafeTiles) {
+      return {
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          embeds: [{
+            title: '❌ Invalid Configuration',
+            description: `With **${bombs} bombs**, only **${maxSafeTiles} safe tiles** exist!\n\nYou requested **${predictedTiles} predictions**.\n\nPlease choose ${maxSafeTiles} or fewer tiles.`,
+            color: 0xff0000
+          }],
+          flags: 64
+        }
+      };
+    }
+
+    const prediction = generateMinesPrediction(bombs, predictedTiles, hash);
     await db.savePrediction(userId, 'mines', prediction);
 
     // Create grid visual
@@ -96,18 +49,41 @@ const commands = {
       if ((i + 1) % 5 === 0) gridText += '\n';
     }
 
+    // Create confidence bar
+    const confidenceBar = '█'.repeat(Math.floor(prediction.confidence / 10)) + 
+                         '░'.repeat(10 - Math.floor(prediction.confidence / 10));
+
     return {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
         embeds: [{
           title: '💣 Mines Prediction',
-          description: `**Confidence:** ${prediction.confidence}%\n**Bombs:** ${bombs}\n\n${gridText}`,
+          description: `**Confidence:** ${prediction.confidence}% ${confidenceBar}\n` +
+                      `**Predictions:** ${predictedTiles}/${prediction.totalSafeTiles} safe tiles\n` +
+                      `**Bombs:** ${bombs}\n\n${gridText}`,
           fields: [
-            { name: 'Hash', value: `\`${prediction.hash}\``, inline: true },
-            { name: 'Safe Tiles', value: prediction.safeTiles.join(', '), inline: true }
+            { 
+              name: '📍 Safe Positions', 
+              value: prediction.safeTiles.map(t => `Position ${t + 1}`).join(', '), 
+              inline: false 
+            },
+            { 
+              name: '🎯 Hash', 
+              value: `\`${prediction.hash}\``, 
+              inline: true 
+            },
+            {
+              name: '⚠️ Risk Level',
+              value: predictedTiles <= 3 ? '🟢 Low' : 
+                     predictedTiles <= 6 ? '🟡 Medium' : '🔴 High',
+              inline: true
+            }
           ],
-          color: 0x00ff00,
-          footer: { text: '✅ Click on green tiles' }
+          color: prediction.confidence >= 80 ? 0x00ff00 : 
+                 prediction.confidence >= 70 ? 0xffff00 : 0xff6600,
+          footer: { 
+            text: `✅ Click green tiles • Predicting ${predictedTiles} tiles reduces confidence` 
+          }
         }],
         flags: 64
       }
@@ -133,16 +109,52 @@ const commands = {
     }
 
     const difficulty = interaction.data.options[0].value;
-    const hash = interaction.data.options[1].value;
+    const rowCount = interaction.data.options[1].value;
+    const hash = interaction.data.options[2].value;
 
-    const prediction = generateTowersPrediction(difficulty, hash);
+    const prediction = generateTowersPrediction(difficulty, rowCount, hash);
     await db.savePrediction(userId, 'towers', prediction);
 
     const tileEmojis = ['⬅️', '⬆️', '➡️'];
     const path = prediction.predictions.map((tile, idx) => 
-      `Row ${idx + 1}: ${tileEmojis[tile]}`
+      `Row ${idx + 1}: ${tileEmojis[tile]} ${['Left', 'Middle', 'Right'][tile]}`
     ).join('\n');
 
+    const confidenceBar = '█'.repeat(Math.floor(prediction.confidence / 10)) + 
+                         '░'.repeat(10 - Math.floor(prediction.confidence / 10));
+
+    return {
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: {
+        embeds: [{
+          title: '🗼 Towers Prediction',
+          description: `**Confidence:** ${prediction.confidence}% ${confidenceBar}\n` +
+                      `**Difficulty:** ${difficulty.toUpperCase()}\n` +
+                      `**Rows Predicted:** ${rowCount}/${prediction.totalRows}\n\n${path}`,
+          fields: [
+            { 
+              name: '🎯 Hash', 
+              value: `\`${prediction.hash}\``, 
+              inline: true 
+            },
+            {
+              name: '⚠️ Risk Level',
+              value: rowCount <= 2 ? '🟢 Low' : 
+                     rowCount <= 5 ? '🟡 Medium' : '🔴 High',
+              inline: true
+            }
+          ],
+          color: prediction.confidence >= 80 ? 0x9b59b6 : 
+                 prediction.confidence >= 70 ? 0xe67e22 : 0xe74c3c,
+          footer: { 
+            text: `⬅️ Left | ⬆️ Middle | ➡️ Right • More rows = lower confidence` 
+          }
+        }],
+        flags: 64
+      }
+    };
+  },
+};
     return {
       type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
       data: {
