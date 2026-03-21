@@ -1,7 +1,7 @@
 name: Register Discord Commands
 
 on:
-  workflow_dispatch:  # Manual trigger only
+  workflow_dispatch:
 
 jobs:
   register:
@@ -19,9 +19,9 @@ jobs:
       - name: Install dependencies
         run: npm install
         
-      - name: Register commands
+      - name: Register commands to Discord
+        run: node scripts/register-commands.js
         env:
           APP_ID: ${{ secrets.APP_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           GUILD_ID: ${{ secrets.GUILD_ID }}
-        run: npm run register
