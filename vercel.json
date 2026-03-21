@@ -5,11 +5,5 @@
       "src": "api/interactions.js",
       "use": "@vercel/node"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/interactions",
-      "dest": "/api/interactions.js"
-    }
   ]
 }
