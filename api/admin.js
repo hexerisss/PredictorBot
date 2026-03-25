@@ -1,45 +1,158 @@
-const db = require('../lib/database');
+const Redis = require('ioredis');
 const crypto = require('crypto');
+const { customAlphabet } = require('nanoid');
 
-// Your exclusive admin password - CHANGE THIS!
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "YourSecurePassword123!";
+const nanoid = customAlphabet('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 16);
 
-// Database setup for bhop licenses
-const Database = require('better-sqlite3');
-const dbPath = require('path').join(__dirname, '../../kyobhop.db');
-const bhopDb = new Database(dbPath);
+let redis;
 
-// Initialize bhop tables
-bhopDb.exec(`
-  CREATE TABLE IF NOT EXISTS bhop_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key TEXT UNIQUE NOT NULL,
-    days INTEGER NOT NULL,
-    redeemed BOOLEAN DEFAULT 0,
-    hwid TEXT,
-    expires_at TEXT,
-    redeemed_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
+function getRedis() {
+  if (!redis) {
+    redis = new Redis(process.env.REDIS_URL);
+  }
+  return redis;
+}
 
-  CREATE TABLE IF NOT EXISTS bhop_hwid_resets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    license_key TEXT NOT NULL,
-    old_hwid TEXT,
-    new_hwid TEXT,
-    reset_by TEXT DEFAULT 'admin',
-    reset_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+// Bhop License Management
+const bhopDB = {
+  async generateKey(days) {
+    const db = getRedis();
+    const key = `BHOP-${nanoid()}`;
+    
+    await db.set(`bhop:license:${key}`, JSON.stringify({
+      days,
+      redeemed: false,
+      hwid: null,
+      expiresAt: null,
+      redeemedAt: null,
+      createdAt: Date.now()
+    }));
+    
+    return key;
+  },
+
+  async getAllKeys() {
+    const db = getRedis();
+    const keys = await db.keys('bhop:license:*');
+    const data = [];
+    
+    for (const key of keys) {
+      const licenseData = await db.get(key);
+      if (licenseData) {
+        data.push({
+          key: key.replace('bhop:license:', ''),
+          ...JSON.parse(licenseData)
+        });
+      }
+    }
+    
+    return data.sort((a, b) => b.createdAt - a.createdAt);
+  },
+
+  async resetHWID(key) {
+    const db = getRedis();
+    const licenseData = await db.get(`bhop:license:${key}`);
+    
+    if (!licenseData) {
+      return { success: false, message: 'Key not found' };
+    }
+    
+    const license = JSON.parse(licenseData);
+    
+    if (!license.redeemed) {
+      return { success: false, message: 'Key has not been activated yet' };
+    }
+
+    // Log the reset
+    const resetId = nanoid();
+    await db.set(`bhop:reset:${resetId}`, JSON.stringify({
+      licenseKey: key,
+      oldHwid: license.hwid,
+      newHwid: null,
+      resetBy: 'admin',
+      resetAt: Date.now()
+    }));
+    
+    await db.lpush('bhop:resets', resetId);
+    await db.ltrim('bhop:resets', 0, 99); // Keep last 100 resets
+
+    // Reset the license
+    await db.set(`bhop:license:${key}`, JSON.stringify({
+      ...license,
+      hwid: null,
+      redeemed: false,
+      redeemedAt: null
+    }));
+
+    return { success: true, message: `HWID reset successful for ${key}` };
+  },
+
+  async setExpiry(key, date) {
+    const db = getRedis();
+    const licenseData = await db.get(`bhop:license:${key}`);
+    
+    if (!licenseData) {
+      return { success: false, message: 'Key not found' };
+    }
+    
+    const license = JSON.parse(licenseData);
+    const expiryTimestamp = new Date(date).getTime();
+    
+    await db.set(`bhop:license:${key}`, JSON.stringify({
+      ...license,
+      expiresAt: expiryTimestamp
+    }));
+    
+    return { success: true, message: `Expiry date updated to ${date}` };
+  },
+
+  async deleteKey(key) {
+    const db = getRedis();
+    const deleted = await db.del(`bhop:license:${key}`);
+    
+    if (deleted === 0) {
+      return { success: false, message: 'Key not found' };
+    }
+    
+    return { success: true, message: `License key deleted` };
+  },
+
+  async getResets() {
+    const db = getRedis();
+    const resetIds = await db.lrange('bhop:resets', 0, 49);
+    const resets = [];
+    
+    for (const resetId of resetIds) {
+      const resetData = await db.get(`bhop:reset:${resetId}`);
+      if (resetData) {
+        resets.push(JSON.parse(resetData));
+      }
+    }
+    
+    return resets;
+  }
+};
 
 module.exports = async (req, res) => {
+  // Enable CORS
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method === 'GET') {
     // Serve admin panel HTML
-    return res.send(`
+    return res.status(200).send(`
 <!DOCTYPE html>
 <html>
 <head>
     <title>KyoBhop Admin Panel</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -96,6 +209,7 @@ module.exports = async (req, res) => {
             color: #fff;
             font-family: 'Courier New', monospace;
         }
+        input::placeholder { color: #888; }
         button {
             background: linear-gradient(135deg, #00ffff, #ff00ff);
             color: #000;
@@ -133,11 +247,15 @@ module.exports = async (req, res) => {
             border-collapse: collapse; 
             margin: 20px 0;
             background: rgba(0, 0, 0, 0.3);
+            overflow-x: auto;
+            display: block;
         }
+        thead, tbody { display: table; width: 100%; table-layout: fixed; }
         th, td { 
             padding: 12px; 
             text-align: left; 
             border-bottom: 1px solid #00ffff50;
+            word-wrap: break-word;
         }
         th { 
             background: rgba(0, 255, 255, 0.2);
@@ -151,11 +269,12 @@ module.exports = async (req, res) => {
             border-radius: 4px;
             color: #00ffff;
             border: 1px solid #00ffff;
-            font-size: 12px;
+            font-size: 11px;
+            display: inline-block;
         }
         .hwid {
             font-family: 'Courier New', monospace;
-            font-size: 11px;
+            font-size: 10px;
             color: #ff00ff;
         }
         .status-active { color: #00ff00; font-weight: bold; }
@@ -167,7 +286,7 @@ module.exports = async (req, res) => {
             margin: 2px;
             width: auto;
             display: inline-block;
-            font-size: 12px;
+            font-size: 11px;
         }
         .success-msg {
             background: rgba(0, 255, 0, 0.2);
@@ -196,6 +315,17 @@ module.exports = async (req, res) => {
         }
         .btn-warning {
             background: linear-gradient(135deg, #ffaa00, #ff00ff) !important;
+        }
+        .loading {
+            text-align: center;
+            color: #00ffff;
+            padding: 20px;
+        }
+        @media (max-width: 768px) {
+            .banner { font-size: 6px; line-height: 8px; }
+            .input-group { grid-template-columns: 1fr; }
+            .action-btn { width: 100%; margin: 5px 0; }
+            table { font-size: 10px; }
         }
     </style>
 </head>
@@ -232,10 +362,10 @@ module.exports = async (req, res) => {
             </div>
             
             <h2>📋 All Bhop License Keys</h2>
-            <div id="keys"></div>
+            <div id="keys"><div class="loading">Loading...</div></div>
             
             <h2>🔄 HWID Reset History</h2>
-            <div id="resets"></div>
+            <div id="resets"><div class="loading">Loading...</div></div>
             
             <button onclick="logout()" style="margin-top: 30px;">Logout</button>
         </div>
@@ -243,24 +373,30 @@ module.exports = async (req, res) => {
 
     <script>
         let token = '';
+        const API_URL = '/api/bhop-admin';
 
         async function login() {
             const password = document.getElementById('password').value;
-            const res = await fetch('/api/bhop-admin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'login', password })
-            });
-            const data = await res.json();
             
-            if (data.success) {
-                token = data.token;
-                document.getElementById('login').style.display = 'none';
-                document.getElementById('dashboard').style.display = 'block';
-                loadData();
-            } else {
-                alert('❌ Invalid password - Access Denied');
-                document.getElementById('password').value = '';
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'login', password })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    token = data.token;
+                    document.getElementById('login').style.display = 'none';
+                    document.getElementById('dashboard').style.display = 'block';
+                    loadData();
+                } else {
+                    alert('❌ Invalid password - Access Denied');
+                    document.getElementById('password').value = '';
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
             }
         }
 
@@ -271,187 +407,238 @@ module.exports = async (req, res) => {
                 return;
             }
             
-            const res = await fetch('/api/bhop-admin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'generate', days, token })
-            });
-            const data = await res.json();
-            
-            if (data.success) {
-                document.getElementById('generatedKey').innerHTML = 
-                    \`<div class="success-msg">
-                        <strong>✅ LICENSE GENERATED</strong><br><br>
-                        <span class="key" style="font-size: 16px;">\${data.key}</span><br><br>
-                        <strong>Duration:</strong> \${days} days
-                    </div>\`;
-                document.getElementById('days').value = '30';
-                loadData();
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'generate', days, token })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    document.getElementById('generatedKey').innerHTML = 
+                        \`<div class="success-msg">
+                            <strong>✅ LICENSE GENERATED</strong><br><br>
+                            <span class="key" style="font-size: 16px;">\${data.key}</span><br><br>
+                            <strong>Duration:</strong> \${days} days
+                        </div>\`;
+                    document.getElementById('days').value = '30';
+                    setTimeout(() => {
+                        document.getElementById('generatedKey').innerHTML = '';
+                        loadData();
+                    }, 5000);
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
             }
         }
 
         async function resetHWID(key) {
             if (!confirm(\`Reset HWID for license:\\n\${key}\\n\\nThis will allow the key to be used on a new PC.\`)) return;
             
-            const res = await fetch('/api/bhop-admin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'resetHWID', key, token })
-            });
-            const data = await res.json();
-            
-            alert(data.message);
-            if (data.success) loadData();
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'resetHWID', key, token })
+                });
+                const data = await res.json();
+                
+                alert(data.message);
+                if (data.success) {
+                    setTimeout(() => loadData(), 500);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
         }
 
         async function setExpiry(key) {
             const date = prompt('Enter new expiry date (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
             if (!date) return;
             
-            const res = await fetch('/api/bhop-admin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'setExpiry', key, date, token })
-            });
-            const data = await res.json();
-            
-            alert(data.message);
-            if (data.success) loadData();
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'setExpiry', key, date, token })
+                });
+                const data = await res.json();
+                
+                alert(data.message);
+                if (data.success) {
+                    setTimeout(() => loadData(), 500);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
         }
 
         async function deleteKey(key) {
             if (!confirm(\`⚠️ DELETE LICENSE KEY:\\n\${key}\\n\\nThis action cannot be undone!\`)) return;
             
-            const res = await fetch('/api/bhop-admin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'deleteKey', key, token })
-            });
-            const data = await res.json();
-            
-            alert(data.message);
-            if (data.success) loadData();
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'deleteKey', key, token })
+                });
+                const data = await res.json();
+                
+                alert(data.message);
+                if (data.success) {
+                    setTimeout(() => loadData(), 500);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
         }
 
         async function loadData() {
-            const res = await fetch('/api/bhop-admin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'getData', token })
-            });
-            const data = await res.json();
-            
-            if (!data.success) return;
+            try {
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'getData', token })
+                });
+                const data = await res.json();
+                
+                if (!data.success) {
+                    if (data.message === 'Unauthorized') {
+                        logout();
+                    }
+                    return;
+                }
 
-            // Stats
-            const totalKeys = data.keys.length;
-            const activeKeys = data.keys.filter(k => k.redeemed && new Date(k.expires_at) > new Date()).length;
-            const unusedKeys = data.keys.filter(k => !k.redeemed).length;
-            const expiredKeys = data.keys.filter(k => k.redeemed && new Date(k.expires_at) <= new Date()).length;
-            
-            document.getElementById('stats').innerHTML = \`
-                <div class="stat-card">
-                    <div>Total Keys</div>
-                    <h3>\${totalKeys}</h3>
-                </div>
-                <div class="stat-card">
-                    <div>Active Licenses</div>
-                    <h3>\${activeKeys}</h3>
-                </div>
-                <div class="stat-card">
-                    <div>Unused Keys</div>
-                    <h3>\${unusedKeys}</h3>
-                </div>
-                <div class="stat-card">
-                    <div>Expired</div>
-                    <h3>\${expiredKeys}</h3>
-                </div>
-            \`;
-
-            // Keys table
-            document.getElementById('keys').innerHTML = \`
-                <table>
-                    <tr>
-                        <th>License Key</th>
-                        <th>Days</th>
-                        <th>Status</th>
-                        <th>HWID</th>
-                        <th>Expires</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                    </tr>
-                    \${data.keys.map(k => {
-                        let status = 'status-unused';
-                        let statusText = '⚪ Unused';
-                        
-                        if (k.redeemed) {
-                            const expired = new Date(k.expires_at) <= new Date();
-                            status = expired ? 'status-inactive' : 'status-active';
-                            statusText = expired ? '❌ Expired' : '✅ Active';
-                        }
-                        
-                        return \`
-                        <tr>
-                            <td><span class="key">\${k.key}</span></td>
-                            <td>\${k.days} days</td>
-                            <td class="\${status}">\${statusText}</td>
-                            <td class="hwid">\${k.hwid ? k.hwid.substring(0, 12) + '...' : '-'}</td>
-                            <td>\${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : '-'}</td>
-                            <td>\${new Date(k.created_at).toLocaleDateString()}</td>
-                            <td>
-                                \${k.redeemed ? \`<button class="action-btn btn-warning" onclick="resetHWID('\${k.key}')">Reset HWID</button>\` : ''}
-                                <button class="action-btn" onclick="setExpiry('\${k.key}')">Set Expiry</button>
-                                <button class="action-btn btn-danger" onclick="deleteKey('\${k.key}')">Delete</button>
-                            </td>
-                        </tr>
-                    \`;
-                    }).join('')}
-                </table>
-            \`;
-
-            // HWID Resets table
-            if (data.resets && data.resets.length > 0) {
-                document.getElementById('resets').innerHTML = \`
-                    <table>
-                        <tr>
-                            <th>License Key</th>
-                            <th>Old HWID</th>
-                            <th>Reset By</th>
-                            <th>Reset At</th>
-                        </tr>
-                        \${data.resets.map(r => \`
-                            <tr>
-                                <td><span class="key">\${r.license_key}</span></td>
-                                <td class="hwid">\${r.old_hwid ? r.old_hwid.substring(0, 16) + '...' : 'N/A'}</td>
-                                <td>\${r.reset_by}</td>
-                                <td>\${new Date(r.reset_at).toLocaleString()}</td>
-                            </tr>
-                        \`).join('')}
-                    </table>
+                // Stats
+                const totalKeys = data.keys.length;
+                const activeKeys = data.keys.filter(k => k.redeemed && k.expiresAt && k.expiresAt > Date.now()).length;
+                const unusedKeys = data.keys.filter(k => !k.redeemed).length;
+                const expiredKeys = data.keys.filter(k => k.redeemed && k.expiresAt && k.expiresAt <= Date.now()).length;
+                
+                document.getElementById('stats').innerHTML = \`
+                    <div class="stat-card">
+                        <div>Total Keys</div>
+                        <h3>\${totalKeys}</h3>
+                    </div>
+                    <div class="stat-card">
+                        <div>Active Licenses</div>
+                        <h3>\${activeKeys}</h3>
+                    </div>
+                    <div class="stat-card">
+                        <div>Unused Keys</div>
+                        <h3>\${unusedKeys}</h3>
+                    </div>
+                    <div class="stat-card">
+                        <div>Expired</div>
+                        <h3>\${expiredKeys}</h3>
+                    </div>
                 \`;
-            } else {
-                document.getElementById('resets').innerHTML = '<p style="text-align: center; color: #999;">No HWID resets yet</p>';
+
+                // Keys table
+                if (data.keys.length === 0) {
+                    document.getElementById('keys').innerHTML = '<p style="text-align: center; color: #999;">No licenses generated yet</p>';
+                } else {
+                    document.getElementById('keys').innerHTML = \`
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>License Key</th>
+                                    <th>Days</th>
+                                    <th>Status</th>
+                                    <th>HWID</th>
+                                    <th>Expires</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                \${data.keys.map(k => {
+                                    let status = 'status-unused';
+                                    let statusText = '⚪ Unused';
+                                    
+                                    if (k.redeemed) {
+                                        const expired = k.expiresAt && k.expiresAt <= Date.now();
+                                        status = expired ? 'status-inactive' : 'status-active';
+                                        statusText = expired ? '❌ Expired' : '✅ Active';
+                                    }
+                                    
+                                    return \`
+                                    <tr>
+                                        <td><span class="key">\${k.key}</span></td>
+                                        <td>\${k.days} days</td>
+                                        <td class="\${status}">\${statusText}</td>
+                                        <td class="hwid">\${k.hwid ? k.hwid.substring(0, 12) + '...' : '-'}</td>
+                                        <td>\${k.expiresAt ? new Date(k.expiresAt).toLocaleDateString() : '-'}</td>
+                                        <td>\${new Date(k.createdAt).toLocaleDateString()}</td>
+                                        <td>
+                                            \${k.redeemed ? \`<button class="action-btn btn-warning" onclick="resetHWID('\${k.key}')">Reset HWID</button>\` : ''}
+                                            <button class="action-btn" onclick="setExpiry('\${k.key}')">Set Expiry</button>
+                                            <button class="action-btn btn-danger" onclick="deleteKey('\${k.key}')">Delete</button>
+                                        </td>
+                                    </tr>
+                                \`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    \`;
+                }
+
+                // HWID Resets table
+                if (data.resets && data.resets.length > 0) {
+                    document.getElementById('resets').innerHTML = \`
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>License Key</th>
+                                    <th>Old HWID</th>
+                                    <th>Reset By</th>
+                                    <th>Reset At</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                \${data.resets.map(r => \`
+                                    <tr>
+                                        <td><span class="key">\${r.licenseKey}</span></td>
+                                        <td class="hwid">\${r.oldHwid ? r.oldHwid.substring(0, 16) + '...' : 'N/A'}</td>
+                                        <td>\${r.resetBy}</td>
+                                        <td>\${new Date(r.resetAt).toLocaleString()}</td>
+                                    </tr>
+                                \`).join('')}
+                            </tbody>
+                        </table>
+                    \`;
+                } else {
+                    document.getElementById('resets').innerHTML = '<p style="text-align: center; color: #999;">No HWID resets yet</p>';
+                }
+            } catch (error) {
+                console.error('Load data error:', error);
             }
         }
 
         function logout() {
-            if (!confirm('Logout from admin panel?')) return;
+            if (token && !confirm('Logout from admin panel?')) return;
             token = '';
             document.getElementById('login').style.display = 'block';
             document.getElementById('dashboard').style.display = 'none';
             document.getElementById('password').value = '';
         }
 
-        // Auto-refresh every 60 seconds
+        // Auto-refresh every 30 seconds
         setInterval(() => {
             if (token) loadData();
-        }, 60000);
+        }, 30000);
 
-        // Handle Enter key on password input
+        // Handle Enter key
         document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('password').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') login();
-            });
+            const passInput = document.getElementById('password');
+            if (passInput) {
+                passInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') login();
+                });
+            }
         });
     </script>
 </body>
@@ -460,71 +647,57 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === 'POST') {
-    const { action, password, token, days, key, date } = req.body;
-
-    if (action === 'login') {
-      if (password === ADMIN_PASSWORD) {
-        const sessionToken = crypto.randomBytes(32).toString('hex');
-        return res.json({ success: true, token: sessionToken });
-      }
-      return res.json({ success: false });
-    }
-
-    // Verify token (simple check - use proper session management in production)
-    if (!token || token.length < 32) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-
     try {
+      const { action, password, token, days, key, date } = req.body;
+
+      if (action === 'login') {
+        if (password === process.env.ADMIN_PASSWORD) {
+          const sessionToken = crypto.randomBytes(32).toString('hex');
+          return res.status(200).json({ success: true, token: sessionToken });
+        }
+        return res.status(200).json({ success: false });
+      }
+
+      // Verify token
+      if (!token || token.length < 32) {
+        return res.status(200).json({ success: false, message: 'Unauthorized' });
+      }
+
       if (action === 'generate') {
-        const bhopKey = `BHOP-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-        const stmt = bhopDb.prepare('INSERT INTO bhop_keys (key, days) VALUES (?, ?)');
-        stmt.run(bhopKey, parseInt(days));
-        return res.json({ success: true, key: bhopKey });
+        const bhopKey = await bhopDB.generateKey(parseInt(days));
+        return res.status(200).json({ success: true, key: bhopKey });
       }
 
       if (action === 'resetHWID') {
-        const keyData = bhopDb.prepare('SELECT hwid, redeemed FROM bhop_keys WHERE key = ?').get(key);
-        
-        if (!keyData) {
-          return res.json({ success: false, message: 'Key not found' });
-        }
-        
-        if (!keyData.redeemed) {
-          return res.json({ success: false, message: 'Key has not been activated yet' });
-        }
-
-        // Log reset
-        bhopDb.prepare('INSERT INTO bhop_hwid_resets (license_key, old_hwid, new_hwid) VALUES (?, ?, NULL)')
-          .run(key, keyData.hwid);
-        
-        // Reset HWID
-        bhopDb.prepare('UPDATE bhop_keys SET hwid = NULL, redeemed = 0 WHERE key = ?').run(key);
-        
-        return res.json({ success: true, message: `HWID reset successful for ${key}` });
+        const result = await bhopDB.resetHWID(key);
+        return res.status(200).json(result);
       }
 
       if (action === 'setExpiry') {
-        bhopDb.prepare('UPDATE bhop_keys SET expires_at = ? WHERE key = ?').run(date, key);
-        return res.json({ success: true, message: `Expiry date updated to ${date}` });
+        const result = await bhopDB.setExpiry(key, date);
+        return res.status(200).json(result);
       }
 
       if (action === 'deleteKey') {
-        bhopDb.prepare('DELETE FROM bhop_keys WHERE key = ?').run(key);
-        return res.json({ success: true, message: `License key ${key} deleted` });
+        const result = await bhopDB.deleteKey(key);
+        return res.status(200).json(result);
       }
 
       if (action === 'getData') {
-        const keys = bhopDb.prepare('SELECT * FROM bhop_keys ORDER BY created_at DESC').all();
-        const resets = bhopDb.prepare('SELECT * FROM bhop_hwid_resets ORDER BY reset_at DESC LIMIT 50').all();
-        return res.json({ success: true, keys, resets });
+        const keys = await bhopDB.getAllKeys();
+        const resets = await bhopDB.getResets();
+        return res.status(200).json({ success: true, keys, resets });
       }
+
+      return res.status(400).json({ success: false, message: 'Invalid action' });
+      
     } catch (error) {
       console.error('Admin API Error:', error);
-      return res.status(500).json({ success: false, message: 'Server error' });
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Server error: ' + error.message 
+      });
     }
-
-    return res.status(400).json({ success: false, message: 'Invalid action' });
   }
 
   return res.status(405).json({ error: 'Method not allowed' });
